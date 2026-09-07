@@ -1,0 +1,49 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_net
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      DB_NAME: project_manager
+      CORS_ORIGINS: '["http://localhost:3001"]'
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8010:8000"
+    networks:
+      - app_net
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3001:8080"
+    networks:
+      - app_net
+
+volumes:
+  mongo_data:
+
+networks:
+  app_net:
+    driver: bridge
