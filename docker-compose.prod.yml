@@ -1,3 +1,18 @@
+# Production compose file for a self-managed host (e.g. a GCP Compute Engine VM).
+#
+# Unlike docker-compose.yml (which builds images locally for local dev), this file
+# PULLS pre-built images from Artifact Registry. CI builds and pushes the images;
+# the deploy step on the VM only needs to `docker compose pull && docker compose up -d`.
+#
+# Required environment variables (put them in a `.env` file next to this one on the VM,
+# see docs/gcp-cicd-guide.md):
+#   AR_REPO   e.g. us-central1-docker.pkg.dev/my-project/project-manager
+#   TAG       image tag to deploy, e.g. a git SHA
+#
+# Usage on the VM:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+
 services:
   mongo:
     image: mongo:7
@@ -17,20 +32,16 @@ services:
       - app_net
 
   backend:
-    build:
-      context: ./backend
+    image: ${AR_REPO}/backend:${TAG}
     restart: unless-stopped
     env_file:
       - ./backend/.env
     environment:
       MONGO_URI: mongodb://mongo:27017
       DB_NAME: project_manager
-      CORS_ORIGINS: '["http://localhost:3001"]'
     depends_on:
       mongo:
         condition: service_healthy
-    ports:
-      - "8010:8000"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -44,14 +55,13 @@ services:
       - app_net
 
   frontend:
-    build:
-      context: ./frontend
+    image: ${AR_REPO}/frontend:${TAG}
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "3001:8080"
+      - "80:8080"
     security_opt:
       - no-new-privileges:true
     cap_drop:

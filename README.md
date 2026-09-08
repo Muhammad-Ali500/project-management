@@ -40,18 +40,31 @@ tasks to completion.
 - **Multi-stage Docker builds** for both tiers — build tooling never ships in the runtime image.
 - **Non-root containers** — backend runs as `appuser` (uid 1000), frontend nginx runs as an
   unprivileged user on port 8080.
+- **Hardened runtime** — every service runs with `security_opt: no-new-privileges`, `cap_drop:
+  ALL`, and a **read-only root filesystem** (backend/frontend get a `tmpfs` only where they
+  genuinely need to write — `/tmp`, and nginx's cache/run dirs). Verified end-to-end: both
+  containers boot, pass their healthchecks, and serve real traffic under these restrictions.
 - **Container healthchecks** on every service (`/health` for the API, mongosh ping for the DB,
   nginx root for the frontend), wired into Compose `depends_on: condition: service_healthy`.
+  Healthchecks hit `127.0.0.1` explicitly rather than `localhost` — some base images resolve
+  `localhost` to `::1` first, which nginx (IPv4-only `listen` by default) refuses.
 - **12-factor config** — all environment-specific values (Mongo URI, DB name, CORS origins, API
   base URL) come from env vars / `.env` files, never hardcoded. `.env.example` files document
   what's required without committing secrets.
-- **Small, pinned base images** — `python:3.12-slim`, `node:20-alpine`, `nginx:1.27-alpine`.
+- **Small, pinned base images** — `python:3.12-slim`, `node:20-alpine`, `nginx:1.27-alpine`. The
+  backend runtime image no longer installs `curl` — its healthcheck uses the Python stdlib
+  instead, one fewer package to patch.
+- **nginx hardening** — gzip, `X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`
+  headers, and long-lived cache headers on hashed static assets.
 - **Separation of concerns** — schemas (API contracts) are separate from documents (persistence
   models), so the API can evolve independently of storage.
 - **Automated CI** — every push/PR runs backend lint (ruff) + tests (pytest against an in-memory
   Mongo mock, so no external DB is needed in CI), frontend lint (eslint) + type-checked build, and
   a Docker build of both images.
 - **`.dockerignore` / `.gitignore`** tuned per tier to keep images and commits lean.
+- **`docker-compose.prod.yml`** — a second compose file that pulls pre-built images from Artifact
+  Registry (`${AR_REPO}/backend:${TAG}`) instead of building locally, for deploying to a
+  self-managed host. See [`docs/gcp-cicd-guide.md`](docs/gcp-cicd-guide.md).
 
 ## Running locally
 
@@ -116,6 +129,21 @@ npm run lint
 npm run build       # type-checks + production build
 ```
 
+## Frontend features
+
+- **Projects, initiatives, tasks** — full create/edit/delete on all three, not just create.
+- **Priority, due dates, assignees, descriptions** — collapsed behind a "+ Add details" toggle on
+  each creation form so quick-add still takes one field, but the full data model is reachable.
+- **Status control** — dropdown-driven status changes (not just a done/not-done toggle) on
+  initiatives and tasks, plus a one-click checkbox for marking a task done.
+- **Overdue flags** — any initiative/task with a past due date that isn't completed/done is called
+  out in red, both in the list and (rolled up) in the dashboard strip.
+- **Progress bars** — initiatives panel shows % of initiatives completed for the selected project;
+  tasks panel shows % done for the selected initiative.
+- **Dashboard strip** — project/initiative/task counts plus an overdue count, above the three
+  panels.
+- **Dark mode** — follows the OS/browser color-scheme preference automatically.
+
 ## API overview
 
 | Method | Path                                      | Description            |
@@ -145,23 +173,33 @@ gcp-main-project/
 ├── frontend/           React + Vite SPA
 │   ├── src/
 │   │   ├── api/        fetch-based API client
-│   │   ├── components/ Project/Initiative/Task panels
+│   │   ├── components/ Project/Initiative/Task panels + Dashboard
+│   │   ├── lib/         Formatting/status helpers
 │   │   └── types/      Shared TypeScript interfaces
-│   ├── nginx.conf       SPA + API reverse proxy config
+│   ├── nginx.conf       SPA + API reverse proxy config, gzip + security headers
 │   └── Dockerfile
-├── docker-compose.yml  Local 3-tier orchestration
+├── docs/
+│   └── gcp-cicd-guide.md   CI/CD setup walkthrough: Cloud Run and Compute Engine VM
+├── docker-compose.yml       Local 3-tier orchestration (builds images locally)
+├── docker-compose.prod.yml  Pulls pre-built images from Artifact Registry, for a VM deploy
 └── .github/workflows/ci.yml   Lint/test/build pipeline
 ```
+
+## Deploying to GCP
+
+See [`docs/gcp-cicd-guide.md`](docs/gcp-cicd-guide.md) for a full walkthrough (written for someone
+new to GCP) covering two paths: serverless **Cloud Run** (with MongoDB Atlas), and a
+self-managed **Compute Engine VM** running the same `docker compose` stack as local dev, with
+GitHub Actions pushing images and triggering the deploy on every merge to `main`.
 
 ## Suggested next steps for extending the DevOps practice
 
 These were deliberately scoped out to start, but are natural next exercises:
 
 1. **Kubernetes** — write Deployment/Service/Ingress manifests (or a Helm chart) and deploy to GKE.
-2. **Terraform** — provision GKE cluster, Artifact Registry, and a managed MongoDB (Atlas) or
-   Cloud SQL (if migrating to a relational model) as IaC.
-3. **CD** — extend the GitHub Actions workflow to push images to Artifact Registry and deploy to
-   GKE on merge to `main`.
-4. **Observability** — structured logging + a `/metrics` endpoint (Prometheus), and a Grafana
+2. **Terraform** — provision the Artifact Registry repo, service accounts, and Workload Identity
+   Federation setup from `docs/gcp-cicd-guide.md` as IaC instead of one-off `gcloud` commands.
+3. **Observability** — structured logging + a `/metrics` endpoint (Prometheus), and a Grafana
    dashboard.
-5. **Secrets management** — move from `.env` files to Secret Manager / Kubernetes Secrets.
+4. **Automated backups** — scheduled `mongodump` (VM path) or rely on Atlas's built-in backups
+   (Cloud Run path).

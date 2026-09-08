@@ -1,6 +1,13 @@
 # ---- Build stage ----
 FROM node:20-alpine AS builder
 
+# Vite inlines VITE_* vars at build time, so the API origin must be supplied as a
+# build arg for deployments where frontend/backend aren't on the same Docker network
+# (e.g. two separate Cloud Run services) - see docs/gcp-cicd-guide.md. Local Compose
+# and the VM path leave this unset and fall back to the same-origin "/api" proxy.
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+
 WORKDIR /build
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -26,6 +33,6 @@ USER appuser
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -q --spider http://localhost:8080/ || exit 1
+    CMD wget -q --spider http://127.0.0.1:8080/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
